@@ -156,6 +156,35 @@ void compute_interface_params(const std::vector<double>& u, const Grid& grid,
         gdiss[i] = gamma_diss;
     }
 }
+// ================= 一阶迎风格式 =================
+void rhs_UPWIND1(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid) {
+    const int N = grid.N;
+    const double idx = 1.0 / grid.dx;
+    for (int i = 0; i < N; ++i) {
+        // 一阶向后差分: du/dx ≈ (u[i] - u[i-1]) / dx
+        dudt[i] = -A * (u[i] - u[grid.idx(i-1)]) * idx;
+    }
+}
+
+// ================= 二阶迎风格式 =================
+void rhs_UPWIND2(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid) {
+    const int N = grid.N;
+    const double idx = 1.0 / grid.dx;
+    for (int i = 0; i < N; ++i) {
+        // 二阶向后差分: du/dx ≈ (3*u[i] - 4*u[i-1] + u[i-2]) / (2*dx)
+        dudt[i] = -A * (3.0*u[i] - 4.0*u[grid.idx(i-1)] + u[grid.idx(i-2)]) * idx / 2.0;
+    }
+}
+
+
+void rhs_UPWIND3(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid) {
+    const int N = grid.N;
+    const double idx = 1.0 / grid.dx;
+    for (int i = 0; i < N; ++i) {
+        // 三阶迎风差分: du/dx ≈ (2*u[i+1] + 3*u[i] - 6*u[i-1] + u[i-2]) / (6*dx)
+        dudt[i] = -A * (2.0 * u[grid.idx(i+1)] + 3.0 * u[i] - 6.0 * u[grid.idx(i-1)] + u[grid.idx(i-2)]) * idx / 6.0;
+    }
+}
 
 void rhs_SADRP_cached(std::vector<double>& dudt, const std::vector<double>& u,
                       const Grid& grid,
@@ -222,4 +251,12 @@ double compute_L2_error(const std::vector<double>& u, const Grid& grid, double t
         err += diff * diff;
     }
     return std::sqrt(err * grid.dx);
+}
+
+double compute_L1_error(const std::vector<double>& u, const Grid& grid,
+                        double t, const std::vector<double>& psi) {
+    double err = 0.0;
+    for (int i = 0; i < grid.N; ++i)
+        err += std::fabs(u[i] - exact_solution_spectrum(grid.x[i], t, psi));
+    return err / grid.N;   // 题目定义：平均绝对误差
 }

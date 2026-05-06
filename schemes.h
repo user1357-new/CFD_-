@@ -24,6 +24,11 @@ void rhs_DRP (std::vector<double>& dudt, const std::vector<double>& u, const Gri
 void rhs_DRPM(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid);
 void rhs_MDCD(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid);
 
+// 新增：迎风格式
+void rhs_UPWIND1(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid);
+void rhs_UPWIND2(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid);
+void rhs_UPWIND3(std::vector<double>& dudt, const std::vector<double>& u, const Grid& grid);
+
 void compute_interface_params(const std::vector<double>& u, const Grid& grid,
                               std::vector<double>& gamma_disp,
                               std::vector<double>& gamma_diss);
@@ -34,3 +39,6 @@ void rhs_SADRP_cached(std::vector<double>& dudt, const std::vector<double>& u,
 void step_SADRP(std::vector<double>& u, const Grid& grid, double dt);
 
 double compute_L2_error(const std::vector<double>& u, const Grid& grid, double t, int m);
+// schemes.h 追加
+double compute_L1_error(const std::vector<double>& u, const Grid& grid,
+                        double t, const std::vector<double>& psi);

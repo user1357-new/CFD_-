@@ -3,123 +3,163 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <random>
+#include <cmath>
 #include "constants.h"
 #include "initial.h"
 #include "schemes.h"
 
-// ---------- 线性格式的通用模拟函数 ----------
-double run_linear_sim(const Grid& grid, int m,
-                      void (*rhs_func)(std::vector<double>&, const std::vector<double>&, const Grid&)) {
-    const double dt_max = CFL * grid.dx;
-    std::vector<double> u(grid.N);
-    for (int i = 0; i < grid.N; ++i)
-        u[i] = initial_wavepacket(grid.x[i], m);
-
-    double t = 0.0;
-    RK4 rk4;
-    while (t < T_END - 1e-12) {
-        double dt = std::min(dt_max, T_END - t);
-        rk4.step(u, grid, dt, rhs_func);
-        t += dt;
-    }
-    return compute_L2_error(u, grid, T_END, m);
-}
-
-// ---------- SA-DRP 专用模拟函数 ----------
-double run_sadrp_sim(const Grid& grid, int m) {
-    const double dt_max = CFL * grid.dx;
-    std::vector<double> u(grid.N);
-    for (int i = 0; i < grid.N; ++i)
-        u[i] = initial_wavepacket(grid.x[i], m);
-
-    double t = 0.0;
-    while (t < T_END - 1e-12) {
-        double dt = std::min(dt_max, T_END - t);
-        step_SADRP(u, grid, dt);
-        t += dt;
-    }
-    return compute_L2_error(u, grid, T_END, m);
-}
-
 int main() {
-    std::ofstream ferr("error_convergence.csv");
-    ferr << "Scheme,m,N,L2_error\n";
+    // 固定随机种子，保证可复现
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    std::vector<double> psi(64);
+    for (int k = 0; k < 64; ++k)
+        psi[k] = dist(rng);
 
-    std::vector<int> Nvals = { 64, 128, 256, 512, 1024 };
-    std::vector<int> mvals = {20};
+    // 准备收敛数据文件
+    std::ofstream fconv("error_convergence.csv");
+    fconv << "N,DRP,DRP-M,MDCD,SA-DRP,UPWIND1,UPWIND2,UPWIND3\n";
+    //fconv << "N,UPWIND1,UPWIND2,UPWIND3\n";
+    // 存放N=256时的波形解（用于最后写文件）
+    std::vector<double> u_drp_256, u_drpm_256, u_mdcd_256, u_sadrp_256;
+    //std::vector<double> u_upwind1_256, u_upwind2_256, u_upwind3_256;
 
-    // 定义要测试的格式（只保留 DRP 和 MDCD，DRP-M 系数不确切可省略）
-    std::vector<std::pair<std::string, void(*)(std::vector<double>&, const std::vector<double>&, const Grid&)>> schemes = {
-        {"DRP",  rhs_DRP},
-        {"DRP-M", rhs_DRPM},
-        {"MDCD", rhs_MDCD}
-    };
+    // 循环不同网格点数
+    std::vector<int> Nvals = {2048,4096};
+    // 用于计算收敛阶：存储上一个N的误差（七种格式）
+    double prev_err[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    //double prev_err[4] = {0.0, 0.0, 0.0, 0.0};
+    int prev_N = 0;
 
-    for (auto& s : schemes) {
-        for (int m : mvals) {
-            for (int N : Nvals) {
-                Grid grid(N);
-                double err = run_linear_sim(grid, m, s.second);
-                ferr << s.first << "," << m << "," << N << "," << err << "\n";
-                std::cout << s.first << " m=" << m << " N=" << N << " L2=" << err << std::endl;
+    for (int N : Nvals) {
+        Grid grid(N);
+        const double dt_max = CFL * grid.dx;
+
+        // 通用线性格式模拟函数 (DRP, DRP-M, MDCD, UPWIND1, UPWIND2, UPWIND3)
+        auto run_linear = [&](void (*rhs)(std::vector<double>&, const std::vector<double>&, const Grid&),
+                              std::vector<double>& u_out) {
+            std::vector<double> u(N);
+            for (int i = 0; i < N; ++i)
+                u[i] = initial_spectrum(grid.x[i], psi);
+
+            double t = 0.0;
+            RK4 rk4;
+            while (t < T_END - 1e-12) {
+                double dt = std::min(dt_max, T_END - t);
+                rk4.step(u, grid, dt, rhs);
+                t += dt;
             }
-        }
-    }
+            u_out = u;
+            return compute_L1_error(u, grid, T_END, psi);
+        };
 
-    // SA-DRP 单独运行
-    for (int m : mvals) {
-        for (int N : Nvals) {
-            Grid grid(N);
-            double err = run_sadrp_sim(grid, m);
-            ferr << "SA-DRP," << m << "," << N << "," << err << "\n";
-            std::cout << "SA-DRP m=" << m << " N=" << N << " L2=" << err << std::endl;
-        }
-    }
-    ferr.close();
+        // DRP
+        std::vector<double> u_drp;
+        double err_drp = run_linear(rhs_DRP, u_drp);
 
-    // ---------- 输出波形对比 (N=256, m=20) ----------
-    const int Nw = 256;
-    const int mw = 20;
-    Grid gw(Nw);
-    std::ofstream fwave("waveform_N256_m20.csv");
-    fwave << "x,Exact,DRP,MDCD,SA-DRP\n";
+        // DRP-M
+        std::vector<double> u_drpm;
+        double err_drpm = run_linear(rhs_DRPM, u_drpm);
 
-    // 计算各格式的最终波形
-    auto compute_wave = [&](auto rhs_func) {
-        const double dt_max = CFL * gw.dx;
-        std::vector<double> u(Nw);
-        for (int i = 0; i < Nw; ++i) u[i] = initial_wavepacket(gw.x[i], mw);
+        // MDCD
+        std::vector<double> u_mdcd;
+        double err_mdcd = run_linear(rhs_MDCD, u_mdcd);
+
+        // 一阶迎风
+        std::vector<double> u_upwind1;
+        double err_upwind1 = run_linear(rhs_UPWIND1, u_upwind1);
+
+        // 二阶迎风
+        std::vector<double> u_upwind2;
+        double err_upwind2 = run_linear(rhs_UPWIND2, u_upwind2);
+
+        // 三阶迎风
+        std::vector<double> u_upwind3;
+        double err_upwind3 = run_linear(rhs_UPWIND3, u_upwind3);
+
+        // SA-DRP 专用
+        std::vector<double> u_sadrp(N);
+        for (int i = 0; i < N; ++i)
+            u_sadrp[i] = initial_spectrum(grid.x[i], psi);
         double t = 0.0;
-        RK4 rk4;
         while (t < T_END - 1e-12) {
             double dt = std::min(dt_max, T_END - t);
-            rk4.step(u, gw, dt, rhs_func);
+            step_SADRP(u_sadrp, grid, dt);
             t += dt;
         }
-        return u;
-    };
+        double err_sadrp = compute_L1_error(u_sadrp, grid, T_END, psi);
 
-    auto u_drp  = compute_wave(rhs_DRP);
-    auto u_mdcd = compute_wave(rhs_MDCD);
+        // 保存至CSV
+        fconv << N << "," << err_drp << "," << err_drpm << "," << err_mdcd << "," 
+              << err_sadrp << "," << err_upwind1 << "," << err_upwind2 << "," << err_upwind3 << "\n";
+       
+       
 
-    // SA-DRP 波形
-    std::vector<double> u_sadrp(Nw);
-    for (int i = 0; i < Nw; ++i) u_sadrp[i] = initial_wavepacket(gw.x[i], mw);
-    double t = 0.0;
-    double dt_max = CFL * gw.dx;
-    while (t < T_END - 1e-12) {
-        double dt = std::min(dt_max, T_END - t);
-        step_SADRP(u_sadrp, gw, dt);
-        t += dt;
+        // 控制台输出当前N误差及收敛阶（N>64时计算）
+        std::cout << "N=" << N
+                 << " | DRP: " << err_drp
+                  << " | DRP-M: " << err_drpm
+                  << " | MDCD: " << err_mdcd
+                  << " | SA-DRP: " << err_sadrp
+                  << " | UPWIND1: " << err_upwind1
+                  << " | UPWIND2: " << err_upwind2
+                  << " | UPWIND3: " << err_upwind3;
+        if (prev_N > 0) {
+            double ratio = std::log(2.0);  // N倍半，阶 = log(err1/err2)/log(2)
+            std::cout << " | order (vs prev N): "
+                      << std::log(prev_err[0] / err_drp) / ratio << ", "
+                      << std::log(prev_err[1] / err_drpm) / ratio << ", "
+                      << std::log(prev_err[2] / err_mdcd) / ratio << ", "
+                      << std::log(prev_err[3] / err_sadrp) / ratio << ", "
+                      << std::log(prev_err[4] / err_upwind1) / ratio << ", "
+                      << std::log(prev_err[5] / err_upwind2) / ratio << ", "
+                      << std::log(prev_err[6] / err_upwind3) / ratio;
+        }
+        std::cout << std::endl;
+
+        // 保存N=256波形数据
+        if (N == 256) {
+            u_drp_256   = u_drp;
+            u_drpm_256  = u_drpm;
+            u_mdcd_256  = u_mdcd;
+            u_sadrp_256 = u_sadrp;
+            u_upwind1_256 = u_upwind1;
+            u_upwind2_256 = u_upwind2;
+            u_upwind3_256 = u_upwind3;
+        }
+
+        // 更新上一个误差记录
+        prev_err[0] = err_drp;
+        prev_err[1] = err_drpm;
+        prev_err[2] = err_mdcd;
+        prev_err[3] = err_sadrp;
+        prev_err[4] = err_upwind1;
+        prev_err[5] = err_upwind2;
+        prev_err[6] = err_upwind3;
+        prev_N = N;
     }
+    fconv.close();
 
-    for (int i = 0; i < Nw; ++i) {
-        fwave << gw.x[i] << ","
-              << exact_solution(gw.x[i], T_END, mw) << ","
-              << u_drp[i] << "," << u_mdcd[i] << "," << u_sadrp[i] << "\n";
+    // 输出 N=256 波形文件
+    std::ofstream fwave("waveform_spectrum_N256.csv");
+    fwave << "x,Exact,DRP,DRP-M,MDCD,SA-DRP,UPWIND1,UPWIND2,UPWIND3\n";
+    // 重建grid(256)仅用于输出坐标（也可直接使用dx=1/256）
+    Grid g256(256);
+    for (int i = 0; i < 256; ++i) {
+        fwave << g256.x[i] << ","
+              << exact_solution_spectrum(g256.x[i], T_END, psi) << ","
+              << u_drp_256[i] << ","
+              << u_drpm_256[i] << ","
+              << u_mdcd_256[i] << ","
+              << u_sadrp_256[i] << ","
+              << u_upwind1_256[i] << ","
+              << u_upwind2_256[i] << ","
+              << u_upwind3_256[i] << "\n";
     }
     fwave.close();
 
-    std::cout << "\nFiles generated: error_convergence.csv, waveform_N256_m20.csv\n";
+    std::cout << "\nConvergence data saved to error_convergence.csv\n";
+    std::cout << "Waveform (N=256) saved to waveform_spectrum_N256.csv\n";
     return 0;
 }
